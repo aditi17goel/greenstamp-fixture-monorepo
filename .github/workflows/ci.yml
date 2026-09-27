@@ -1,0 +1,216 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  # Inert until a merge queue is enabled on this repo; required for the
+  # merge-queue measurement leg (no queue exists yet).
+  merge_group:
+
+jobs:
+  test-alpha:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Path filter: this job's tests run only when alpha's paths changed.
+      # PRs diff against the base SHA; push/merge_group diff against HEAD~1
+      # (approximate for merge-group temp commits; the filter is fixture
+      # realism, and the measurement plan records the caveat). The root
+      # commit has no parent, so it counts as changed.
+      - id: paths
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -z "$base" ] && base="HEAD~1"
+          if ! git rev-parse "$base" >/dev/null 2>&1; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$base" HEAD -- pkgs/alpha tests/test_alpha.py | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: ids
+        if: steps.paths.outputs.changed == 'true'
+        run: |
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+          echo "wf=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # Same gate pattern as ci-dedupe's own ci workflow: the secrets
+      # context is unusable in step `if:` expressions, so detect
+      # configuration in shell once and gate on this step's output.
+      # Inert (plain pytest runs) until both secrets exist.
+      - id: gate
+        if: steps.paths.outputs.changed == 'true'
+        run: |
+          if [ -n "${{ secrets.CIDEDUPE_API_URL }}" ] && [ -n "${{ secrets.CIDEDUPE_CHECKOUT_TOKEN }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The cidedupe action lives in the private ci-dedupe repo, which this
+      # workflow cannot `uses:` directly (GitHub runs actions only from the
+      # same or a public repository), so check it out at a pinned SHA.
+      # Re-pin deliberately; the SHA is part of the measurement record.
+      - if: steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: aditi17goel/ci-dedupe
+          ref: b1bc8eeaa1791df481a07db3847f1f3fa802c0f7
+          token: ${{ secrets.CIDEDUPE_CHECKOUT_TOKEN }}
+          path: .cidedupe-action
+
+      # Skip when this exact package already passed on this tree. The pkg
+      # input keeps alpha and beta distinct job identities.
+      - id: dedupe
+        if: steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true'
+        uses: ./.cidedupe-action
+        with:
+          api-url: ${{ secrets.CIDEDUPE_API_URL }}
+          api-token: ${{ secrets.CIDEDUPE_API_TOKEN }}
+          mode: decide
+          workflow-sha: ${{ steps.ids.outputs.wf }}
+          tree-sha: ${{ steps.ids.outputs.tree }}
+          runner-label: ubuntu-latest
+          inputs-json: '{"pkg":"alpha"}'
+          tool-versions-json: '{"python":"3.12"}'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          pr-number: ${{ github.event.pull_request.number }}
+
+      - id: timer_start
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        with:
+          python-version: "3.12"
+
+      - run: pip install pytest
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+
+      - run: pytest tests/test_alpha.py -q
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+
+      - id: timer_stop
+        if: always() && steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        run: |
+          end=$(date +%s)
+          start="${{ steps.timer_start.outputs.start }}"
+          echo "duration=$((end - ${start:-$end}))" >> "$GITHUB_OUTPUT"
+
+      - if: always() && steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        uses: ./.cidedupe-action
+        with:
+          api-url: ${{ secrets.CIDEDUPE_API_URL }}
+          api-token: ${{ secrets.CIDEDUPE_API_TOKEN }}
+          mode: record
+          workflow-sha: ${{ steps.ids.outputs.wf }}
+          tree-sha: ${{ steps.ids.outputs.tree }}
+          runner-label: ubuntu-latest
+          inputs-json: '{"pkg":"alpha"}'
+          tool-versions-json: '{"python":"3.12"}'
+          commit-sha: ${{ github.sha }}
+          passed: ${{ job.status == 'success' }}
+          log-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          duration-s: ${{ steps.timer_stop.outputs.duration }}
+
+  test-beta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: paths
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -z "$base" ] && base="HEAD~1"
+          if ! git rev-parse "$base" >/dev/null 2>&1; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$base" HEAD -- pkgs/beta tests/test_beta.py | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: ids
+        if: steps.paths.outputs.changed == 'true'
+        run: |
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+          echo "wf=$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - id: gate
+        if: steps.paths.outputs.changed == 'true'
+        run: |
+          if [ -n "${{ secrets.CIDEDUPE_API_URL }}" ] && [ -n "${{ secrets.CIDEDUPE_CHECKOUT_TOKEN }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: aditi17goel/ci-dedupe
+          ref: b1bc8eeaa1791df481a07db3847f1f3fa802c0f7
+          token: ${{ secrets.CIDEDUPE_CHECKOUT_TOKEN }}
+          path: .cidedupe-action
+
+      - id: dedupe
+        if: steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true'
+        uses: ./.cidedupe-action
+        with:
+          api-url: ${{ secrets.CIDEDUPE_API_URL }}
+          api-token: ${{ secrets.CIDEDUPE_API_TOKEN }}
+          mode: decide
+          workflow-sha: ${{ steps.ids.outputs.wf }}
+          tree-sha: ${{ steps.ids.outputs.tree }}
+          runner-label: ubuntu-latest
+          inputs-json: '{"pkg":"beta"}'
+          tool-versions-json: '{"python":"3.12"}'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          pr-number: ${{ github.event.pull_request.number }}
+
+      - id: timer_start
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        with:
+          python-version: "3.12"
+
+      - run: pip install pytest
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+
+      - run: pytest tests/test_beta.py -q
+        if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+
+      - id: timer_stop
+        if: always() && steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        run: |
+          end=$(date +%s)
+          start="${{ steps.timer_start.outputs.start }}"
+          echo "duration=$((end - ${start:-$end}))" >> "$GITHUB_OUTPUT"
+
+      - if: always() && steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        uses: ./.cidedupe-action
+        with:
+          api-url: ${{ secrets.CIDEDUPE_API_URL }}
+          api-token: ${{ secrets.CIDEDUPE_API_TOKEN }}
+          mode: record
+          workflow-sha: ${{ steps.ids.outputs.wf }}
+          tree-sha: ${{ steps.ids.outputs.tree }}
+          runner-label: ubuntu-latest
+          inputs-json: '{"pkg":"beta"}'
+          tool-versions-json: '{"python":"3.12"}'
+          commit-sha: ${{ github.sha }}
+          passed: ${{ job.status == 'success' }}
+          log-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          duration-s: ${{ steps.timer_stop.outputs.duration }}
