@@ -1,1 +1,1 @@
-"""Toy monorepo packages for the cidedupe measurement fixture."""
+"""Toy monorepo packages for the greenstamp measurement fixture."""
