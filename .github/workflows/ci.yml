@@ -59,7 +59,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: aditi17goel/greenstamp
-          ref: 554d766feac413943a55bbce4fb0b1d2617cd426
+          ref: 8af9e52be2e86c8deed737fc161582136f5fa17c
           token: ${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}
           path: .greenstamp-action
 
@@ -157,7 +157,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: aditi17goel/greenstamp
-          ref: 554d766feac413943a55bbce4fb0b1d2617cd426
+          ref: 8af9e52be2e86c8deed737fc161582136f5fa17c
           token: ${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}
           path: .greenstamp-action
 
