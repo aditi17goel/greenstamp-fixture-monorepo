@@ -7,11 +7,15 @@ on:
   # merge-queue measurement leg (no queue exists yet).
   merge_group:
 
+permissions:
+  contents: read
+  pull-requests: write # skip-receipt comments from the decide step
+
 jobs:
   test-alpha:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v4
         with:
           fetch-depth: 0
 
@@ -41,11 +45,17 @@ jobs:
       # Same gate pattern as greenstamp's own ci workflow: the secrets
       # context is unusable in step `if:` expressions, so detect
       # configuration in shell once and gate on this step's output.
-      # Inert (plain pytest runs) until both secrets exist.
+      # Secrets arrive via env indirection, never interpolated. Inert
+      # (plain pytest runs) until all four secrets exist.
       - id: gate
         if: steps.paths.outputs.changed == 'true'
+        env:
+          API_URL: ${{ secrets.GREENSTAMP_API_URL }}
+          API_TOKEN: ${{ secrets.GREENSTAMP_API_TOKEN }}
+          RECORD_TOKEN: ${{ secrets.GREENSTAMP_RECORD_TOKEN }}
+          CHECKOUT_TOKEN: ${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}
         run: |
-          if [ -n "${{ secrets.GREENSTAMP_API_URL }}" ] && [ -n "${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}" ]; then
+          if [ -n "$API_URL" ] && [ -n "$API_TOKEN" ] && [ -n "$RECORD_TOKEN" ] && [ -n "$CHECKOUT_TOKEN" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -56,12 +66,13 @@ jobs:
       # same or a public repository), so check it out at a pinned SHA.
       # Re-pin deliberately; the SHA is part of the measurement record.
       - if: steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v4
         with:
           repository: aditi17goel/greenstamp
-          ref: 8af9e52be2e86c8deed737fc161582136f5fa17c
+          ref: 52f0314131faab12c109a432c87bbda49950010a
           token: ${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}
           path: .greenstamp-action
+          persist-credentials: false
 
       # Skip when this exact package already passed on this tree. The pkg
       # input keeps alpha and beta distinct job identities.
@@ -85,12 +96,12 @@ jobs:
         if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
         run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@06da6279cdbca41027908073e81a4544dc79c06b # v5
         if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
         with:
           python-version: "3.12"
 
-      - run: pip install pytest
+      - run: pip install "pytest==9.1.1"
         if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
 
       - run: pytest tests/test_alpha.py -q
@@ -98,16 +109,21 @@ jobs:
 
       - id: timer_stop
         if: always() && steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        env:
+          TIMER_START: ${{ steps.timer_start.outputs.start }}
         run: |
           end=$(date +%s)
-          start="${{ steps.timer_start.outputs.start }}"
+          start="$TIMER_START"
           echo "duration=$((end - ${start:-$end}))" >> "$GITHUB_OUTPUT"
 
-      - if: always() && steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true' && steps.dedupe.outputs.verdict != 'skip'
+      # Recording happens in trusted contexts only (pushes, never PR
+      # builds): the record credential must not reach untrusted code.
+      - if: always() && steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true' && steps.dedupe.outputs.verdict != 'skip' && github.event_name != 'pull_request'
         uses: ./.greenstamp-action
         with:
           api-url: ${{ secrets.GREENSTAMP_API_URL }}
           api-token: ${{ secrets.GREENSTAMP_API_TOKEN }}
+          record-token: ${{ secrets.GREENSTAMP_RECORD_TOKEN }}
           mode: record
           workflow-sha: ${{ steps.ids.outputs.wf }}
           tree-sha: ${{ steps.ids.outputs.tree }}
@@ -122,7 +138,7 @@ jobs:
   test-beta:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v4
         with:
           fetch-depth: 0
 
@@ -146,20 +162,26 @@ jobs:
 
       - id: gate
         if: steps.paths.outputs.changed == 'true'
+        env:
+          API_URL: ${{ secrets.GREENSTAMP_API_URL }}
+          API_TOKEN: ${{ secrets.GREENSTAMP_API_TOKEN }}
+          RECORD_TOKEN: ${{ secrets.GREENSTAMP_RECORD_TOKEN }}
+          CHECKOUT_TOKEN: ${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}
         run: |
-          if [ -n "${{ secrets.GREENSTAMP_API_URL }}" ] && [ -n "${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}" ]; then
+          if [ -n "$API_URL" ] && [ -n "$API_TOKEN" ] && [ -n "$RECORD_TOKEN" ] && [ -n "$CHECKOUT_TOKEN" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
       - if: steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v4
         with:
           repository: aditi17goel/greenstamp
-          ref: 8af9e52be2e86c8deed737fc161582136f5fa17c
+          ref: 52f0314131faab12c109a432c87bbda49950010a
           token: ${{ secrets.GREENSTAMP_CHECKOUT_TOKEN }}
           path: .greenstamp-action
+          persist-credentials: false
 
       - id: dedupe
         if: steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true'
@@ -181,12 +203,12 @@ jobs:
         if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
         run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@06da6279cdbca41027908073e81a4544dc79c06b # v5
         if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
         with:
           python-version: "3.12"
 
-      - run: pip install pytest
+      - run: pip install "pytest==9.1.1"
         if: steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
 
       - run: pytest tests/test_beta.py -q
@@ -194,16 +216,21 @@ jobs:
 
       - id: timer_stop
         if: always() && steps.paths.outputs.changed == 'true' && steps.dedupe.outputs.verdict != 'skip'
+        env:
+          TIMER_START: ${{ steps.timer_start.outputs.start }}
         run: |
           end=$(date +%s)
-          start="${{ steps.timer_start.outputs.start }}"
+          start="$TIMER_START"
           echo "duration=$((end - ${start:-$end}))" >> "$GITHUB_OUTPUT"
 
-      - if: always() && steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true' && steps.dedupe.outputs.verdict != 'skip'
+      # Recording happens in trusted contexts only (pushes, never PR
+      # builds): the record credential must not reach untrusted code.
+      - if: always() && steps.paths.outputs.changed == 'true' && steps.gate.outputs.enabled == 'true' && steps.dedupe.outputs.verdict != 'skip' && github.event_name != 'pull_request'
         uses: ./.greenstamp-action
         with:
           api-url: ${{ secrets.GREENSTAMP_API_URL }}
           api-token: ${{ secrets.GREENSTAMP_API_TOKEN }}
+          record-token: ${{ secrets.GREENSTAMP_RECORD_TOKEN }}
           mode: record
           workflow-sha: ${{ steps.ids.outputs.wf }}
           tree-sha: ${{ steps.ids.outputs.tree }}
